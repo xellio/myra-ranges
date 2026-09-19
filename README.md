@@ -1,5 +1,11 @@
 # myra-ranges
 
+[![CI](https://github.com/xellio/myra-ranges/actions/workflows/ci.yml/badge.svg)](https://github.com/xellio/myra-ranges/actions/workflows/ci.yml)
+[![Go Reference](https://pkg.go.dev/badge/github.com/xellio/myra-ranges.svg)](https://pkg.go.dev/github.com/xellio/myra-ranges)
+[![Go Report Card](https://goreportcard.com/badge/github.com/xellio/myra-ranges)](https://goreportcard.com/report/github.com/xellio/myra-ranges)
+[![Go Version](https://img.shields.io/github/go-mod/go-version/xellio/myra-ranges)](go.mod)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+
 Keeps an nginx allow-list in sync with the **Myra Security CDN IP ranges**,
 so your origin server only accepts requests that actually come through Myra
 (plus whatever you add yourself, e.g. localhost or your LAN). Anyone hitting
