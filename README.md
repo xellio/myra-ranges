@@ -17,11 +17,11 @@ Every run:
    right now; normalize, dedupe, sort (IPv4 first).
 2. Render the snippet: `extra_allow` entries from the config, one
    `allow <cidr>;` per Myra range, `deny all;`.
-3. Compare with the file on disk. The comparison is canonical — only the
+3. Compare with the file on disk. The comparison is canonical - only the
    effective `allow`/`deny` rules count, comments and order are ignored,
-   and `1.2.3.4/32` equals `1.2.3.4`. Unchanged → exit `0`, nothing touched.
-4. Changed → keep the old file as `<snippet>.prev`, write the new one, run
-   `nginx -t`. Test fails → restore the old file, exit `1`. Test passes →
+   and `1.2.3.4/32` equals `1.2.3.4`. Unchanged -> exit `0`, nothing touched.
+4. Changed -> keep the old file as `<snippet>.prev`, write the new one, run
+   `nginx -t`. Test fails -> restore the old file, exit `1`. Test passes ->
    `systemctl reload nginx`, exit `3`.
 
 Safety net: it refuses to deploy fewer than `min_ranges` ranges, so a broken
@@ -59,7 +59,7 @@ server {
 
 Note: `return` directives (redirects, `return 404`) run *before* nginx's
 access phase, so a block that only redirects will still answer outsiders
-with the redirect — nothing behind it is reachable, but don't be surprised.
+with the redirect - nothing behind it is reachable, but don't be surprised.
 
 ## Run
 
@@ -70,11 +70,11 @@ sudo ./bin/myra-ranges -c config.yml         # apply (root: writes /etc/nginx, r
 sudo ./bin/myra-ranges -c config.yml --force # rewrite + test + reload even if unchanged
 ```
 
-Exit codes: `0` unchanged · `3` changed (applied, or would be in dry-run) · `1` error.
+Exit codes: `0` unchanged, `3` changed (applied or would be in dry-run), `1` error.
 
 Run it from cron (or whatever scheduler you have) once a day; the exit code
 tells a wrapper whether to notify. Keep a copy of the rendered snippet in
-your infrastructure repo — the file on the server is generated and will be
+your infrastructure repo - the file on the server is generated and will be
 overwritten.
 
 ## Development

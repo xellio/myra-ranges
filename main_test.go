@@ -22,7 +22,7 @@ func TestParseCIDR(t *testing.T) {
 			t.Fatalf("%q: %v", in, err)
 		}
 		if p.String() != want {
-			t.Errorf("%q → %s, want %s", in, p, want)
+			t.Errorf("%q -> %s, want %s", in, p, want)
 		}
 	}
 	for _, bad := range []string{"", "not-an-ip", "300.1.1.1/24", "10.0.0.0/33"} {
@@ -50,7 +50,7 @@ func TestRenderAndDiff(t *testing.T) {
 		t.Errorf("deny all must be last")
 	}
 
-	// same content, different comments/order/spelling (/32 vs bare host) → no diff
+	// same content, different comments/order/spelling (/32 vs bare host) -> no diff
 	old := "# hand-written\nallow 5.9.89.19/32;\nallow 192.168.1.0/24;\nallow ::1;\nallow 127.0.0.1;\nallow 2a02:cb43::/32;   # trailing comment\nallow 45.91.156.0/22;\ndeny all;\n"
 	added, removed := diffAllows([]byte(old), []byte(out))
 	if len(added) != 0 || len(removed) != 0 {
