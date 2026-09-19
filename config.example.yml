@@ -1,4 +1,4 @@
-# Copy to config.yml (gitignored). Either apikey+secret OR token.
+# Copy to config.yml (keep it out of git, chmod 600). Either apikey+secret OR token.
 apikey: 'ADD_YOUR_API_KEY'
 secret: 'ADD_YOUR_SECRET'
 # token: 'ADD_YOUR_API_TOKEN'
@@ -8,11 +8,12 @@ snippet: /etc/nginx/snippets/myra-only.conf
 nginx_test: nginx -t
 nginx_reload: systemctl reload nginx
 
-# Always allowed in addition to the Myra ranges (local tests, LAN, hairpin NAT).
+# Always allowed in addition to the Myra ranges: localhost for local checks,
+# add your LAN / monitoring hosts as needed (CIDR or single IP).
 extra_allow:
   - 127.0.0.1
   - ::1
-  - 192.168.178.0/24
+  # - 192.168.1.0/24
 
 # Safety net: refuse to deploy if Myra returns fewer ranges than this.
 min_ranges: 8

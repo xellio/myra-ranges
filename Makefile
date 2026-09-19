@@ -9,7 +9,7 @@ build: $(BINDIR)
 $(BINDIR):
 	mkdir -p $(BINDIR)
 
-# cross-compile for the Pi gateway (server .111, aarch64)
+# cross-compile, e.g. for a Raspberry Pi
 linux-arm64: $(BINDIR)
 	GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o $(BINDIR)$(TARGET)-linux-arm64 .
 
