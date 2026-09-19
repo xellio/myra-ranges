@@ -16,6 +16,11 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version-file: go.mod
+      - name: ascii only (code, docs, config)
+        run: |
+          if grep -rnP '[^\x00-\x7F]' --exclude-dir=.git --exclude=LICENSE .; then
+            echo "non-ASCII characters found"; exit 1
+          fi
       - name: gofmt
         run: test -z "$(gofmt -l .)" || { gofmt -l .; exit 1; }
       - name: vet

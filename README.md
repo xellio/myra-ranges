@@ -43,6 +43,9 @@ Fill in `apikey` + `secret` (or `token`) from the Myra app. The other keys:
 | `snippet` | `/etc/nginx/snippets/myra-only.conf` | file to render |
 | `nginx_test` | `nginx -t` | run after writing; failure = rollback |
 | `nginx_reload` | `systemctl reload nginx` | run after a successful test |
+
+Both commands are split on whitespace and run directly (no shell, no quoting).
+Wrap anything fancier in a small script and point the option at it.
 | `extra_allow` | `[]` | CIDRs/IPs always allowed in addition to Myra (localhost, LAN, monitoring) |
 | `min_ranges` | `8` | refuse to deploy fewer Myra ranges than this |
 

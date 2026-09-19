@@ -139,6 +139,9 @@ func run() int {
 }
 
 func loadConfig(path string) (*configuration, error) {
+	if info, err := os.Stat(path); err == nil && info.Mode().Perm()&0o077 != 0 {
+		fmt.Fprintf(os.Stderr, "warning: %s is readable by group/others (mode %04o) and holds API credentials, chmod 600 recommended\n", path, info.Mode().Perm())
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -204,6 +207,10 @@ func fetchRanges(api *myrasec.API) ([]string, int, error) {
 		if err != nil {
 			return nil, 0, fmt.Errorf("page %d: %v", page, err)
 		}
+		if len(list) == 0 {
+			break
+		}
+		newOnPage := 0
 		for _, r := range list {
 			if !r.Enabled {
 				skipped++
@@ -224,10 +231,16 @@ func fetchRanges(api *myrasec.API) ([]string, int, error) {
 			if !seen[p] {
 				seen[p] = true
 				prefixes = append(prefixes, p)
+				newOnPage++
 			}
 		}
-		if len(list) < pageSize {
+		// Stop on a short page (normal end) or when a page brought nothing new
+		// (an API that ignores the page parameter would otherwise loop to maxPages).
+		if len(list) < pageSize || (page > 1 && newOnPage == 0) {
 			break
+		}
+		if page == maxPages {
+			fmt.Fprintf(os.Stderr, "warning: stopped after %d pages, list may be incomplete\n", maxPages)
 		}
 	}
 	if len(prefixes) == 0 {
@@ -345,14 +358,14 @@ func normalize(data []byte) []byte {
 }
 
 func diffAllows(current, rendered []byte) (added, removed []string) {
-	old, new := allowSet(current), allowSet(rendered)
-	for k := range new {
-		if !old[k] {
+	before, after := allowSet(current), allowSet(rendered)
+	for k := range after {
+		if !before[k] {
 			added = append(added, k)
 		}
 	}
-	for k := range old {
-		if !new[k] {
+	for k := range before {
+		if !after[k] {
 			removed = append(removed, k)
 		}
 	}

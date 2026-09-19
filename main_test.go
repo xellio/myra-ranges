@@ -32,6 +32,25 @@ func TestParseCIDR(t *testing.T) {
 	}
 }
 
+func TestCanonicalRule(t *testing.T) {
+	cases := map[string]string{
+		"allow 1.2.3.4/32;":      "allow 1.2.3.4;",
+		"allow 1.2.3.4;":         "allow 1.2.3.4;",
+		"allow  10.0.0.7/8 ;":    "allow 10.0.0.0/8;",
+		"allow 2a02:cb43::/32;":  "allow 2a02:cb43::/32;",
+		"allow 2001:db8::1/128;": "allow 2001:db8::1;",
+		"deny all;":              "deny all;",
+		"deny\tall;":             "deny all;",
+		"allow not-an-ip;":       "allow not-an-ip;",
+		"satisfy any;":           "satisfy any;",
+	}
+	for in, want := range cases {
+		if got := canonicalRule(in); got != want {
+			t.Errorf("%q -> %q, want %q", in, got, want)
+		}
+	}
+}
+
 func TestRenderAndDiff(t *testing.T) {
 	cfg := &configuration{ExtraAllow: []string{"127.0.0.1", "::1", "192.168.1.0/24"}}
 	ranges := []string{"45.91.156.0/22", "5.9.89.19/32", "2a02:cb43::/32"}
