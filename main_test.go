@@ -50,8 +50,8 @@ func TestRenderAndDiff(t *testing.T) {
 		t.Errorf("deny all must be last")
 	}
 
-	// same content, different comments/order → no diff
-	old := "# hand-written\nallow 5.9.89.19;\nallow 192.168.178.0/24;\nallow ::1;\nallow 127.0.0.1;\nallow 2a02:cb43::/32;\nallow 45.91.156.0/22;\ndeny all;\n"
+	// same content, different comments/order/spelling (/32 vs bare host) → no diff
+	old := "# hand-written\nallow 5.9.89.19/32;\nallow 192.168.178.0/24;\nallow ::1;\nallow 127.0.0.1;\nallow 2a02:cb43::/32;   # trailing comment\nallow 45.91.156.0/22;\ndeny all;\n"
 	added, removed := diffAllows([]byte(old), []byte(out))
 	if len(added) != 0 || len(removed) != 0 {
 		t.Errorf("unexpected diff: +%v -%v", added, removed)

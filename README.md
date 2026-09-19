@@ -39,7 +39,12 @@ cp config.example.yml config.yml && chmod 600 config.yml   # then fill in apikey
 ./bin/myra-ranges -c config.yml --print      # list the current Myra ranges, nothing else
 ./bin/myra-ranges -c config.yml --dry-run    # show what would change
 sudo ./bin/myra-ranges -c config.yml         # apply (needs root for /etc/nginx + reload)
+sudo ./bin/myra-ranges -c config.yml --force # rewrite + test + reload even if unchanged (replace a hand-written file)
 ```
+
+Comparison is canonical: `allow 1.2.3.4/32;` and `allow 1.2.3.4;` are the same
+rule, comments and order are ignored — so a hand-written snippet with the same
+rules reads as "unchanged".
 
 Exit codes: `0` unchanged · `3` changed (applied, or would be in dry-run) · `1` error.
 

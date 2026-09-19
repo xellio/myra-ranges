@@ -53,6 +53,7 @@ var (
 	configFile string
 	dryRun     bool
 	printOnly  bool
+	force      bool
 )
 
 func init() {
@@ -60,6 +61,7 @@ func init() {
 	flag.StringVar(&configFile, "config", "./config.yml", "path to config.yml")
 	flag.BoolVar(&dryRun, "dry-run", false, "render + diff only, never write or reload")
 	flag.BoolVar(&printOnly, "print", false, "print the current Myra ranges (one CIDR per line) and exit")
+	flag.BoolVar(&force, "force", false, "write + test + reload even if the effective rules are unchanged (e.g. to replace a hand-written file)")
 }
 
 func main() {
@@ -105,12 +107,17 @@ func run() int {
 	}
 
 	added, removed := diffAllows(current, rendered)
-	if len(added) == 0 && len(removed) == 0 && bytes.Equal(normalize(current), normalize(rendered)) {
+	unchanged := len(added) == 0 && len(removed) == 0 && bytes.Equal(normalize(current), normalize(rendered))
+	if unchanged && !force {
 		fmt.Printf("✅ myra-ranges: unchanged — %d Myra ranges (%d skipped: disabled/expired)\n", len(ranges), skipped)
 		return exitUnchanged
 	}
 
-	fmt.Printf("🔄 myra-ranges: allow-list differs — %d Myra ranges now (%d skipped)\n", len(ranges), skipped)
+	if unchanged {
+		fmt.Printf("🔄 myra-ranges: --force — rules unchanged, rewriting file anyway (%d Myra ranges, %d skipped)\n", len(ranges), skipped)
+	} else {
+		fmt.Printf("🔄 myra-ranges: allow-list differs — %d Myra ranges now (%d skipped)\n", len(ranges), skipped)
+	}
 	for _, a := range added {
 		fmt.Printf("  + %s\n", a)
 	}
@@ -298,7 +305,9 @@ func cidrForNginx(p netip.Prefix) string {
 	return p.String()
 }
 
-// allowSet extracts the effective allow/deny lines (no comments, no blanks).
+// allowSet extracts the effective allow/deny lines (no comments, no blanks),
+// with the address part canonicalized so "allow 1.2.3.4/32;" and
+// "allow 1.2.3.4;" (or masked/unmasked prefixes) compare equal.
 func allowSet(data []byte) map[string]bool {
 	set := map[string]bool{}
 	for _, line := range strings.Split(string(data), "\n") {
@@ -309,9 +318,20 @@ func allowSet(data []byte) map[string]bool {
 		if i := strings.Index(line, "#"); i >= 0 {
 			line = strings.TrimSpace(line[:i])
 		}
-		set[line] = true
+		set[canonicalRule(line)] = true
 	}
 	return set
+}
+
+// canonicalRule normalizes "allow X;" / "deny X;" to a single spelling of X.
+func canonicalRule(line string) string {
+	fields := strings.Fields(strings.TrimSuffix(line, ";"))
+	if len(fields) == 2 && (fields[0] == "allow" || fields[0] == "deny") && fields[1] != "all" {
+		if p, err := parseCIDR(fields[1]); err == nil {
+			return fields[0] + " " + cidrForNginx(p) + ";"
+		}
+	}
+	return strings.Join(fields, " ") + ";"
 }
 
 func normalize(data []byte) []byte {
