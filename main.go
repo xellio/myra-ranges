@@ -1,11 +1,12 @@
-// myra-ranges keeps an nginx allow-list snippet in sync with the Myra CDN's
-// published IP ranges.
+// myra-ranges keeps a web server's IP allow-list in sync with the Myra CDN's
+// published IP ranges. Supported servers are listed in serverTypes (currently
+// nginx and HAProxy).
 //
-// It fetches the ranges via the Myra API (myrasec-go), renders them as
-// `allow <cidr>;` lines (plus configured extra allows and a final `deny all;`),
-// compares the result with the snippet currently on disk and - unless
-// --dry-run - replaces it, runs `nginx -t` and reloads nginx. If the test
-// fails the previous snippet is restored.
+// It fetches the ranges via the Myra API (myrasec-go), renders them (plus
+// configured extra allows) in the format of the configured server, compares
+// the result with the file currently on disk and - unless --dry-run -
+// replaces it, runs the server's config test and reloads it. If the test
+// fails the previous file is restored.
 //
 // Exit codes: 0 = no change, 3 = changed (applied or would be with --dry-run),
 // 1 = error. The exit code lets a cron wrapper decide whether to notify.
@@ -39,14 +40,73 @@ const (
 )
 
 type configuration struct {
-	APIKey      string   `yaml:"apikey"`
-	Secret      string   `yaml:"secret"`
-	Token       string   `yaml:"token"`
-	Snippet     string   `yaml:"snippet"`
-	NginxTest   string   `yaml:"nginx_test"`
-	NginxReload string   `yaml:"nginx_reload"`
-	ExtraAllow  []string `yaml:"extra_allow"`
-	MinRanges   int      `yaml:"min_ranges"`
+	APIKey     string   `yaml:"apikey"`
+	Secret     string   `yaml:"secret"`
+	Token      string   `yaml:"token"`
+	Server     string   `yaml:"server"`
+	Output     string   `yaml:"output"`
+	Test       string   `yaml:"test"`
+	Reload     string   `yaml:"reload"`
+	ExtraAllow []string `yaml:"extra_allow"`
+	MinRanges  int      `yaml:"min_ranges"`
+	LogLevel   string   `yaml:"log_level"`
+}
+
+// Log levels, lowest first. Messages below the configured level are dropped;
+// errors are always shown.
+const (
+	levelDebug = iota
+	levelInfo
+	levelWarning
+)
+
+var logLevels = map[string]int{
+	"debug":   levelDebug,
+	"info":    levelInfo,
+	"warning": levelWarning,
+}
+
+// logLevel is set from the config in run(); info until then.
+var logLevel = levelInfo
+
+// serverType describes one supported web server: the defaults for output,
+// test and reload, and how the allow-list file is rendered. Adding a server
+// means adding an entry to serverTypes (and, if its file format is new, teaching
+// canonicalRule to read it back).
+type serverType struct {
+	output, test, reload string
+
+	// entry renders one allowed network as a line of the file.
+	entry func(netip.Prefix) string
+	// footer is appended after the last entry.
+	footer string
+}
+
+var serverTypes = map[string]serverType{
+	// nginx: snippet included in each server {} block.
+	"nginx": {
+		output: "/etc/nginx/snippets/myra-only.conf",
+		test:   "nginx -t",
+		reload: "systemctl reload nginx",
+		entry:  func(p netip.Prefix) string { return "allow " + formatCIDR(p) + ";" },
+		footer: "\ndeny all;\n",
+	},
+	// HAProxy: ACL pattern file, the deny is done by the ACL in haproxy.cfg.
+	"haproxy": {
+		output: "/etc/haproxy/myra-only.lst",
+		test:   "haproxy -c -f /etc/haproxy/haproxy.cfg",
+		reload: "systemctl reload haproxy",
+		entry:  formatCIDR,
+	},
+}
+
+func serverNames() []string {
+	names := make([]string, 0, len(serverTypes))
+	for name := range serverTypes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 var (
@@ -72,9 +132,12 @@ func main() {
 func run() int {
 	cfg, err := loadConfig(configFile)
 	if err != nil {
+		warnIfReadable(configFile)
 		fail("config: %v", err)
 		return exitError
 	}
+	logLevel = logLevels[cfg.LogLevel]
+	warnIfReadable(configFile)
 
 	api, err := newAPI(cfg)
 	if err != nil {
@@ -94,39 +157,39 @@ func run() int {
 		return exitUnchanged
 	}
 	if len(ranges) < cfg.MinRanges {
-		fail("only %d ranges returned (min_ranges=%d) - refusing to touch %s", len(ranges), cfg.MinRanges, cfg.Snippet)
+		fail("only %d ranges returned (min_ranges=%d) - refusing to touch %s", len(ranges), cfg.MinRanges, cfg.Output)
 		return exitError
 	}
 
 	rendered := render(cfg, ranges)
 
-	current, err := os.ReadFile(cfg.Snippet)
+	current, err := os.ReadFile(cfg.Output)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		fail("read %s: %v", cfg.Snippet, err)
+		fail("read %s: %v", cfg.Output, err)
 		return exitError
 	}
 
 	added, removed := diffAllows(current, rendered)
 	unchanged := len(added) == 0 && len(removed) == 0 && bytes.Equal(normalize(current), normalize(rendered))
 	if unchanged && !force {
-		fmt.Printf("myra-ranges: unchanged - %d Myra ranges (%d skipped: disabled/expired)\n", len(ranges), skipped)
+		infof("myra-ranges: unchanged - %d Myra ranges (%d skipped: disabled/expired)", len(ranges), skipped)
 		return exitUnchanged
 	}
 
 	if unchanged {
-		fmt.Printf("myra-ranges: --force - rules unchanged, rewriting file anyway (%d Myra ranges, %d skipped)\n", len(ranges), skipped)
+		infof("myra-ranges: --force - rules unchanged, rewriting file anyway (%d Myra ranges, %d skipped)", len(ranges), skipped)
 	} else {
-		fmt.Printf("myra-ranges: allow-list differs - %d Myra ranges now (%d skipped)\n", len(ranges), skipped)
+		infof("myra-ranges: allow-list differs - %d Myra ranges now (%d skipped)", len(ranges), skipped)
 	}
 	for _, a := range added {
-		fmt.Printf("  + %s\n", a)
+		infof("  + %s", a)
 	}
 	for _, r := range removed {
-		fmt.Printf("  - %s\n", r)
+		infof("  - %s", r)
 	}
 
 	if dryRun {
-		fmt.Println("dry-run: nothing written, nginx untouched")
+		infof("dry-run: nothing written, %s untouched", cfg.Server)
 		return exitChanged
 	}
 
@@ -134,14 +197,11 @@ func run() int {
 		fail("apply: %v", err)
 		return exitError
 	}
-	fmt.Printf("applied to %s, nginx tested + reloaded (%s)\n", cfg.Snippet, time.Now().Format(time.RFC3339))
+	infof("applied to %s, %s tested + reloaded (%s)", cfg.Output, cfg.Server, time.Now().Format(time.RFC3339))
 	return exitChanged
 }
 
 func loadConfig(path string) (*configuration, error) {
-	if info, err := os.Stat(path); err == nil && info.Mode().Perm()&0o077 != 0 {
-		fmt.Fprintf(os.Stderr, "warning: %s is readable by group/others (mode %04o) and holds API credentials, chmod 600 recommended\n", path, info.Mode().Perm())
-	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -153,17 +213,30 @@ func loadConfig(path string) (*configuration, error) {
 	if cfg.Token == "" && (cfg.APIKey == "" || cfg.Secret == "") {
 		return nil, errors.New("need either token or apikey+secret")
 	}
-	if cfg.Snippet == "" {
-		cfg.Snippet = "/etc/nginx/snippets/myra-only.conf"
+	if cfg.Server == "" {
+		cfg.Server = "nginx"
 	}
-	if cfg.NginxTest == "" {
-		cfg.NginxTest = "nginx -t"
+	defaults, ok := serverTypes[cfg.Server]
+	if !ok {
+		return nil, fmt.Errorf("server %q: must be one of %s", cfg.Server, strings.Join(serverNames(), ", "))
 	}
-	if cfg.NginxReload == "" {
-		cfg.NginxReload = "systemctl reload nginx"
+	if cfg.Output == "" {
+		cfg.Output = defaults.output
+	}
+	if cfg.Test == "" {
+		cfg.Test = defaults.test
+	}
+	if cfg.Reload == "" {
+		cfg.Reload = defaults.reload
 	}
 	if cfg.MinRanges <= 0 {
 		cfg.MinRanges = 8
+	}
+	if cfg.LogLevel == "" {
+		cfg.LogLevel = "info"
+	}
+	if _, ok := logLevels[cfg.LogLevel]; !ok {
+		return nil, fmt.Errorf("log_level %q: must be one of debug, info, warning", cfg.LogLevel)
 	}
 	for _, e := range cfg.ExtraAllow {
 		if _, err := parseCIDR(e); err != nil {
@@ -171,6 +244,12 @@ func loadConfig(path string) (*configuration, error) {
 		}
 	}
 	return cfg, nil
+}
+
+func warnIfReadable(path string) {
+	if info, err := os.Stat(path); err == nil && info.Mode().Perm()&0o077 != 0 {
+		warnf("%s is readable by group/others (mode %04o) and holds API credentials, chmod 600 recommended", path, info.Mode().Perm())
+	}
 }
 
 func newAPI(cfg *configuration) (*myrasec.API, error) {
@@ -240,7 +319,7 @@ func fetchRanges(api *myrasec.API) ([]string, int, error) {
 			break
 		}
 		if page == maxPages {
-			fmt.Fprintf(os.Stderr, "warning: stopped after %d pages, list may be incomplete\n", maxPages)
+			warnf("stopped after %d pages, list may be incomplete", maxPages)
 		}
 	}
 	if len(prefixes) == 0 {
@@ -283,11 +362,15 @@ func parseCIDR(s string) (netip.Prefix, error) {
 	return p.Masked(), nil
 }
 
+// render produces the allow-list file in the format of cfg.Server
+// (which loadConfig has validated).
 func render(cfg *configuration, ranges []string) []byte {
+	server := serverTypes[cfg.Server]
+
 	var b strings.Builder
 	b.WriteString("# GENERATED by myra-ranges - do not edit by hand, edits are overwritten.\n")
 	b.WriteString("# Origin lock-down: only the Myra CDN (and the extra_allow entries) may talk\n")
-	b.WriteString("# to the public vhosts; everything else gets 403. Source: Myra API\n")
+	b.WriteString("# to the public frontends. Source: Myra API\n")
 	b.WriteString("# (ListIPRanges, enabled + currently valid). https://github.com/xellio/myra-ranges\n")
 	fmt.Fprintf(&b, "# %d Myra ranges.\n\n", len(ranges))
 
@@ -295,7 +378,7 @@ func render(cfg *configuration, ranges []string) []byte {
 		b.WriteString("# extra_allow (config): local / LAN\n")
 		for _, e := range cfg.ExtraAllow {
 			p, _ := parseCIDR(e)
-			fmt.Fprintf(&b, "allow %s;\n", cidrForNginx(p))
+			b.WriteString(server.entry(p) + "\n")
 		}
 		b.WriteString("\n")
 	}
@@ -303,24 +386,25 @@ func render(cfg *configuration, ranges []string) []byte {
 	b.WriteString("# Myra CDN\n")
 	for _, r := range ranges {
 		p, _ := netip.ParsePrefix(r)
-		fmt.Fprintf(&b, "allow %s;\n", cidrForNginx(p))
+		b.WriteString(server.entry(p) + "\n")
 	}
-	b.WriteString("\ndeny all;\n")
+	b.WriteString(server.footer)
 	return []byte(b.String())
 }
 
-// cidrForNginx renders single hosts without the /32 or /128 suffix (nginx
-// accepts both, but "allow 127.0.0.1;" reads better and matches the old file).
-func cidrForNginx(p netip.Prefix) string {
+// formatCIDR renders single hosts without the /32 or /128 suffix (nginx and
+// HAProxy accept both, but "127.0.0.1" reads better and matches the old file).
+func formatCIDR(p netip.Prefix) string {
 	if p.IsSingleIP() {
 		return p.Addr().String()
 	}
 	return p.String()
 }
 
-// allowSet extracts the effective allow/deny lines (no comments, no blanks),
-// with the address part canonicalized so "allow 1.2.3.4/32;" and
-// "allow 1.2.3.4;" (or masked/unmasked prefixes) compare equal.
+// allowSet extracts the effective rules (no comments, no blanks): nginx
+// allow/deny lines or bare HAProxy pattern lines, with the address part
+// canonicalized so "allow 1.2.3.4/32;" and "allow 1.2.3.4;" (or masked/unmasked
+// prefixes) compare equal.
 func allowSet(data []byte) map[string]bool {
 	set := map[string]bool{}
 	for _, line := range strings.Split(string(data), "\n") {
@@ -336,12 +420,18 @@ func allowSet(data []byte) map[string]bool {
 	return set
 }
 
-// canonicalRule normalizes "allow X;" / "deny X;" to a single spelling of X.
+// canonicalRule normalizes "allow X;" / "deny X;" (nginx) and a bare "X"
+// (HAProxy pattern file) to a single spelling of X.
 func canonicalRule(line string) string {
 	fields := strings.Fields(strings.TrimSuffix(line, ";"))
+	if len(fields) == 1 && !strings.HasSuffix(line, ";") {
+		if p, err := parseCIDR(fields[0]); err == nil {
+			return formatCIDR(p)
+		}
+	}
 	if len(fields) == 2 && (fields[0] == "allow" || fields[0] == "deny") && fields[1] != "all" {
 		if p, err := parseCIDR(fields[1]); err == nil {
-			return fields[0] + " " + cidrForNginx(p) + ";"
+			return fields[0] + " " + formatCIDR(p) + ";"
 		}
 	}
 	return strings.Join(fields, " ") + ";"
@@ -375,48 +465,79 @@ func diffAllows(current, rendered []byte) (added, removed []string) {
 }
 
 func apply(cfg *configuration, current, rendered []byte) error {
-	dir := filepath.Dir(cfg.Snippet)
+	dir := filepath.Dir(cfg.Output)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	prev := cfg.Snippet + ".prev"
+	prev := cfg.Output + ".prev"
 	if len(current) > 0 {
 		if err := os.WriteFile(prev, current, 0o644); err != nil {
 			return fmt.Errorf("write %s: %v", prev, err)
 		}
 	}
 
-	tmp := cfg.Snippet + ".tmp"
+	tmp := cfg.Output + ".tmp"
 	if err := os.WriteFile(tmp, rendered, 0o644); err != nil {
 		return fmt.Errorf("write %s: %v", tmp, err)
 	}
-	if err := os.Rename(tmp, cfg.Snippet); err != nil {
+	if err := os.Rename(tmp, cfg.Output); err != nil {
 		return fmt.Errorf("rename: %v", err)
 	}
 
-	if out, err := runCmd(cfg.NginxTest); err != nil {
+	if err := runCmd("test", cfg.Test); err != nil {
 		// roll back before reporting
 		if len(current) > 0 {
-			_ = os.WriteFile(cfg.Snippet, current, 0o644)
+			_ = os.WriteFile(cfg.Output, current, 0o644)
 		} else {
-			_ = os.Remove(cfg.Snippet)
+			_ = os.Remove(cfg.Output)
 		}
-		return fmt.Errorf("%q failed, previous snippet restored:\n%s", cfg.NginxTest, out)
+		return fmt.Errorf("%q failed, previous file restored: %v", cfg.Test, err)
 	}
-	if out, err := runCmd(cfg.NginxReload); err != nil {
-		return fmt.Errorf("%q failed (snippet already in place, config tested OK):\n%s", cfg.NginxReload, out)
+	if err := runCmd("reload", cfg.Reload); err != nil {
+		return fmt.Errorf("%q failed, file already in place, config tested OK: %v", cfg.Reload, err)
 	}
 	return nil
 }
 
-func runCmd(cmdline string) (string, error) {
+// runCmd runs cmdline for the given step (test/reload). With log_level debug
+// its output is passed straight through to our stdout/stderr; otherwise it is
+// captured and only shown (as part of the error) if the command fails.
+func runCmd(step, cmdline string) error {
 	parts := strings.Fields(cmdline)
 	if len(parts) == 0 {
-		return "", errors.New("empty command")
+		return errors.New("empty command")
 	}
 	cmd := exec.Command(parts[0], parts[1:]...)
+	if logLevel <= levelDebug {
+		debugf("running %s: %s", step, cmdline)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	}
 	out, err := cmd.CombinedOutput()
-	return strings.TrimSpace(string(out)), err
+	if err != nil && len(bytes.TrimSpace(out)) > 0 {
+		return fmt.Errorf("%v\n%s", err, bytes.TrimSpace(out))
+	}
+	return err
+}
+
+// Debug and info go to stdout, warnings and errors to stderr.
+func debugf(format string, args ...interface{}) {
+	if logLevel <= levelDebug {
+		fmt.Printf(format+"\n", args...)
+	}
+}
+
+func infof(format string, args ...interface{}) {
+	if logLevel <= levelInfo {
+		fmt.Printf(format+"\n", args...)
+	}
+}
+
+func warnf(format string, args ...interface{}) {
+	if logLevel <= levelWarning {
+		fmt.Fprintf(os.Stderr, "warning: "+format+"\n", args...)
+	}
 }
 
 func fail(format string, args ...interface{}) {
