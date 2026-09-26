@@ -132,6 +132,7 @@ func main() {
 func run() int {
 	cfg, err := loadConfig(configFile)
 	if err != nil {
+		warnIfReadable(configFile)
 		fail("config: %v", err)
 		return exitError
 	}
