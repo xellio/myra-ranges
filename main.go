@@ -49,7 +49,25 @@ type configuration struct {
 	Reload     string   `yaml:"reload"`
 	ExtraAllow []string `yaml:"extra_allow"`
 	MinRanges  int      `yaml:"min_ranges"`
+	LogLevel   string   `yaml:"log_level"`
 }
+
+// Log levels, lowest first. Messages below the configured level are dropped;
+// errors are always shown.
+const (
+	levelDebug = iota
+	levelInfo
+	levelWarning
+)
+
+var logLevels = map[string]int{
+	"debug":   levelDebug,
+	"info":    levelInfo,
+	"warning": levelWarning,
+}
+
+// logLevel is set from the config in run(); info until then.
+var logLevel = levelInfo
 
 // serverType describes one supported web server: the defaults for output,
 // test and reload, and how the allow-list file is rendered. Adding a server
@@ -117,6 +135,8 @@ func run() int {
 		fail("config: %v", err)
 		return exitError
 	}
+	logLevel = logLevels[cfg.LogLevel]
+	warnIfReadable(configFile)
 
 	api, err := newAPI(cfg)
 	if err != nil {
@@ -151,24 +171,24 @@ func run() int {
 	added, removed := diffAllows(current, rendered)
 	unchanged := len(added) == 0 && len(removed) == 0 && bytes.Equal(normalize(current), normalize(rendered))
 	if unchanged && !force {
-		fmt.Printf("myra-ranges: unchanged - %d Myra ranges (%d skipped: disabled/expired)\n", len(ranges), skipped)
+		infof("myra-ranges: unchanged - %d Myra ranges (%d skipped: disabled/expired)", len(ranges), skipped)
 		return exitUnchanged
 	}
 
 	if unchanged {
-		fmt.Printf("myra-ranges: --force - rules unchanged, rewriting file anyway (%d Myra ranges, %d skipped)\n", len(ranges), skipped)
+		infof("myra-ranges: --force - rules unchanged, rewriting file anyway (%d Myra ranges, %d skipped)", len(ranges), skipped)
 	} else {
-		fmt.Printf("myra-ranges: allow-list differs - %d Myra ranges now (%d skipped)\n", len(ranges), skipped)
+		infof("myra-ranges: allow-list differs - %d Myra ranges now (%d skipped)", len(ranges), skipped)
 	}
 	for _, a := range added {
-		fmt.Printf("  + %s\n", a)
+		infof("  + %s", a)
 	}
 	for _, r := range removed {
-		fmt.Printf("  - %s\n", r)
+		infof("  - %s", r)
 	}
 
 	if dryRun {
-		fmt.Printf("dry-run: nothing written, %s untouched\n", cfg.Server)
+		infof("dry-run: nothing written, %s untouched", cfg.Server)
 		return exitChanged
 	}
 
@@ -176,14 +196,11 @@ func run() int {
 		fail("apply: %v", err)
 		return exitError
 	}
-	fmt.Printf("applied to %s, %s tested + reloaded (%s)\n", cfg.Output, cfg.Server, time.Now().Format(time.RFC3339))
+	infof("applied to %s, %s tested + reloaded (%s)", cfg.Output, cfg.Server, time.Now().Format(time.RFC3339))
 	return exitChanged
 }
 
 func loadConfig(path string) (*configuration, error) {
-	if info, err := os.Stat(path); err == nil && info.Mode().Perm()&0o077 != 0 {
-		fmt.Fprintf(os.Stderr, "warning: %s is readable by group/others (mode %04o) and holds API credentials, chmod 600 recommended\n", path, info.Mode().Perm())
-	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, err
@@ -214,12 +231,24 @@ func loadConfig(path string) (*configuration, error) {
 	if cfg.MinRanges <= 0 {
 		cfg.MinRanges = 8
 	}
+	if cfg.LogLevel == "" {
+		cfg.LogLevel = "info"
+	}
+	if _, ok := logLevels[cfg.LogLevel]; !ok {
+		return nil, fmt.Errorf("log_level %q: must be one of debug, info, warning", cfg.LogLevel)
+	}
 	for _, e := range cfg.ExtraAllow {
 		if _, err := parseCIDR(e); err != nil {
 			return nil, fmt.Errorf("extra_allow %q: %v", e, err)
 		}
 	}
 	return cfg, nil
+}
+
+func warnIfReadable(path string) {
+	if info, err := os.Stat(path); err == nil && info.Mode().Perm()&0o077 != 0 {
+		warnf("%s is readable by group/others (mode %04o) and holds API credentials, chmod 600 recommended", path, info.Mode().Perm())
+	}
 }
 
 func newAPI(cfg *configuration) (*myrasec.API, error) {
@@ -289,7 +318,7 @@ func fetchRanges(api *myrasec.API) ([]string, int, error) {
 			break
 		}
 		if page == maxPages {
-			fmt.Fprintf(os.Stderr, "warning: stopped after %d pages, list may be incomplete\n", maxPages)
+			warnf("stopped after %d pages, list may be incomplete", maxPages)
 		}
 	}
 	if len(prefixes) == 0 {
@@ -454,29 +483,60 @@ func apply(cfg *configuration, current, rendered []byte) error {
 		return fmt.Errorf("rename: %v", err)
 	}
 
-	if out, err := runCmd(cfg.Test); err != nil {
+	if err := runCmd("test", cfg.Test); err != nil {
 		// roll back before reporting
 		if len(current) > 0 {
 			_ = os.WriteFile(cfg.Output, current, 0o644)
 		} else {
 			_ = os.Remove(cfg.Output)
 		}
-		return fmt.Errorf("%q failed, previous file restored:\n%s", cfg.Test, out)
+		return fmt.Errorf("%q failed, previous file restored: %v", cfg.Test, err)
 	}
-	if out, err := runCmd(cfg.Reload); err != nil {
-		return fmt.Errorf("%q failed (file already in place, config tested OK):\n%s", cfg.Reload, out)
+	if err := runCmd("reload", cfg.Reload); err != nil {
+		return fmt.Errorf("%q failed, file already in place, config tested OK: %v", cfg.Reload, err)
 	}
 	return nil
 }
 
-func runCmd(cmdline string) (string, error) {
+// runCmd runs cmdline for the given step (test/reload). With log_level debug
+// its output is passed straight through to our stdout/stderr; otherwise it is
+// captured and only shown (as part of the error) if the command fails.
+func runCmd(step, cmdline string) error {
 	parts := strings.Fields(cmdline)
 	if len(parts) == 0 {
-		return "", errors.New("empty command")
+		return errors.New("empty command")
 	}
 	cmd := exec.Command(parts[0], parts[1:]...)
+	if logLevel <= levelDebug {
+		debugf("running %s: %s", step, cmdline)
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		return cmd.Run()
+	}
 	out, err := cmd.CombinedOutput()
-	return strings.TrimSpace(string(out)), err
+	if err != nil && len(bytes.TrimSpace(out)) > 0 {
+		return fmt.Errorf("%v\n%s", err, bytes.TrimSpace(out))
+	}
+	return err
+}
+
+// Debug and info go to stdout, warnings and errors to stderr.
+func debugf(format string, args ...interface{}) {
+	if logLevel <= levelDebug {
+		fmt.Printf(format+"\n", args...)
+	}
+}
+
+func infof(format string, args ...interface{}) {
+	if logLevel <= levelInfo {
+		fmt.Printf(format+"\n", args...)
+	}
+}
+
+func warnf(format string, args ...interface{}) {
+	if logLevel <= levelWarning {
+		fmt.Fprintf(os.Stderr, "warning: "+format+"\n", args...)
+	}
 }
 
 func fail(format string, args ...interface{}) {

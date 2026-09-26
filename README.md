@@ -60,9 +60,18 @@ Fill in `apikey` + `secret` (or `token`) from the Myra app and pick your
 | `reload` | `systemctl reload <server>` | run after a successful test |
 | `extra_allow` | `[]` | CIDRs/IPs always allowed in addition to Myra (localhost, LAN, monitoring) |
 | `min_ranges` | `8` | refuse to deploy fewer Myra ranges than this |
+| `log_level` | `info` | `debug`, `info` or `warning`, see below |
 
 `test` and `reload` are split on whitespace and run directly (no shell, no
 quoting). Wrap anything fancier in a small script and point the option at it.
+
+`log_level`:
+
+| level | shows |
+|-------|-------|
+| `debug` | everything from `info`, plus each test/reload command and its output |
+| `info` | status, diff, warnings and errors; test/reload output only when a command fails |
+| `warning` | only warnings and errors - quiet mode for cron |
 
 ## Server setup
 

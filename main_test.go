@@ -185,4 +185,20 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if _, err := loadConfig(write("server: apache\n")); err == nil {
 		t.Errorf("expected error for unknown server")
 	}
+	if cfg.LogLevel != "info" {
+		t.Errorf("default log_level = %q, want info", cfg.LogLevel)
+	}
+	if _, err := loadConfig(write("log_level: verbose\n")); err == nil {
+		t.Errorf("expected error for unknown log_level")
+	}
+}
+
+func TestRunCmdCapturesOutputBelowDebug(t *testing.T) {
+	if err := runCmd("test", "echo hidden"); err != nil {
+		t.Fatal(err)
+	}
+	err := runCmd("test", "ls /does-not-exist")
+	if err == nil || !strings.Contains(err.Error(), "does-not-exist") {
+		t.Errorf("failed command output missing from error: %v", err)
+	}
 }

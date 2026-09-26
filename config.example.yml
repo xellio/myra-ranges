@@ -25,3 +25,8 @@ extra_allow:
 
 # Safety net: refuse to deploy if Myra returns fewer ranges than this.
 min_ranges: 8
+
+# Output verbosity: debug, info (default) or warning. debug also shows the
+# output of the test and reload commands (otherwise only shown when a command
+# fails); warning only prints warnings and errors, handy for cron.
+log_level: info
