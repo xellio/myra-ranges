@@ -43,6 +43,9 @@ func TestCanonicalRule(t *testing.T) {
 		"deny\tall;":             "deny all;",
 		"allow not-an-ip;":       "allow not-an-ip;",
 		"satisfy any;":           "satisfy any;",
+		"1.2.3.4/32":             "1.2.3.4",
+		" 10.0.0.7/8 ":           "10.0.0.0/8",
+		"2001:db8::1/128":        "2001:db8::1",
 	}
 	for in, want := range cases {
 		if got := canonicalRule(in); got != want {
@@ -52,7 +55,7 @@ func TestCanonicalRule(t *testing.T) {
 }
 
 func TestRenderAndDiff(t *testing.T) {
-	cfg := &configuration{ExtraAllow: []string{"127.0.0.1", "::1", "192.168.1.0/24"}}
+	cfg := &configuration{Server: "nginx", ExtraAllow: []string{"127.0.0.1", "::1", "192.168.1.0/24"}}
 	ranges := []string{"45.91.156.0/22", "5.9.89.19/32", "2a02:cb43::/32"}
 	out := string(render(cfg, ranges))
 
@@ -97,7 +100,7 @@ func TestApplyRollsBackOnFailedTest(t *testing.T) {
 	if err := os.WriteFile(snippet, current, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	cfg := &configuration{Snippet: snippet, NginxTest: "false", NginxReload: "true"}
+	cfg := &configuration{Output: snippet, Test: "false", Reload: "true"}
 	err := apply(cfg, current, []byte("allow 5.6.7.8;\ndeny all;\n"))
 	if err == nil {
 		t.Fatal("expected error from failing nginx test")
@@ -115,7 +118,7 @@ func TestApplyRollsBackOnFailedTest(t *testing.T) {
 func TestApplySuccess(t *testing.T) {
 	dir := t.TempDir()
 	snippet := filepath.Join(dir, "myra-only.conf")
-	cfg := &configuration{Snippet: snippet, NginxTest: "true", NginxReload: "true"}
+	cfg := &configuration{Output: snippet, Test: "true", Reload: "true"}
 	rendered := []byte("allow 5.6.7.8;\ndeny all;\n")
 	if err := apply(cfg, nil, rendered); err != nil {
 		t.Fatal(err)
@@ -126,5 +129,60 @@ func TestApplySuccess(t *testing.T) {
 	}
 	if _, err := os.Stat(snippet + ".tmp"); err == nil {
 		t.Errorf(".tmp left behind")
+	}
+}
+
+func TestRenderHAProxy(t *testing.T) {
+	cfg := &configuration{Server: "haproxy", ExtraAllow: []string{"127.0.0.1", "::1"}}
+	out := string(render(cfg, []string{"45.91.156.0/22", "5.9.89.19/32", "2a02:cb43::/32"}))
+
+	for _, want := range []string{"\n127.0.0.1\n", "\n::1\n", "\n45.91.156.0/22\n", "\n5.9.89.19\n", "\n2a02:cb43::/32\n"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("rendered pattern file lacks %q:\n%s", want, out)
+		}
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		if _, err := parseCIDR(line); err != nil {
+			t.Errorf("HAProxy pattern file must only contain CIDRs, got %q", line)
+		}
+	}
+
+	old := "# hand-written\n5.9.89.19/32\n::1\n127.0.0.1\n2a02:cb43::/32\n45.91.156.0/22\n"
+	added, removed := diffAllows([]byte(old), []byte(out))
+	if len(added) != 0 || len(removed) != 0 {
+		t.Errorf("unexpected diff: +%v -%v", added, removed)
+	}
+}
+
+func TestLoadConfigDefaults(t *testing.T) {
+	write := func(content string) string {
+		path := filepath.Join(t.TempDir(), "config.yml")
+		if err := os.WriteFile(path, []byte("token: x\n"+content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		return path
+	}
+
+	cfg, err := loadConfig(write(""))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Server != "nginx" || cfg.Output != "/etc/nginx/snippets/myra-only.conf" || cfg.Test != "nginx -t" || cfg.Reload != "systemctl reload nginx" {
+		t.Errorf("nginx defaults: %+v", cfg)
+	}
+
+	cfg, err = loadConfig(write("server: haproxy\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Output != "/etc/haproxy/myra-only.lst" || cfg.Test != "haproxy -c -f /etc/haproxy/haproxy.cfg" || cfg.Reload != "systemctl reload haproxy" {
+		t.Errorf("haproxy defaults: %+v", cfg)
+	}
+
+	if _, err := loadConfig(write("server: apache\n")); err == nil {
+		t.Errorf("expected error for unknown server")
 	}
 }

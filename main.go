@@ -1,11 +1,12 @@
-// myra-ranges keeps an nginx allow-list snippet in sync with the Myra CDN's
-// published IP ranges.
+// myra-ranges keeps a web server's IP allow-list in sync with the Myra CDN's
+// published IP ranges. Supported servers are listed in serverTypes (currently
+// nginx and HAProxy).
 //
-// It fetches the ranges via the Myra API (myrasec-go), renders them as
-// `allow <cidr>;` lines (plus configured extra allows and a final `deny all;`),
-// compares the result with the snippet currently on disk and - unless
-// --dry-run - replaces it, runs `nginx -t` and reloads nginx. If the test
-// fails the previous snippet is restored.
+// It fetches the ranges via the Myra API (myrasec-go), renders them (plus
+// configured extra allows) in the format of the configured server, compares
+// the result with the file currently on disk and - unless --dry-run -
+// replaces it, runs the server's config test and reloads it. If the test
+// fails the previous file is restored.
 //
 // Exit codes: 0 = no change, 3 = changed (applied or would be with --dry-run),
 // 1 = error. The exit code lets a cron wrapper decide whether to notify.
@@ -39,14 +40,55 @@ const (
 )
 
 type configuration struct {
-	APIKey      string   `yaml:"apikey"`
-	Secret      string   `yaml:"secret"`
-	Token       string   `yaml:"token"`
-	Snippet     string   `yaml:"snippet"`
-	NginxTest   string   `yaml:"nginx_test"`
-	NginxReload string   `yaml:"nginx_reload"`
-	ExtraAllow  []string `yaml:"extra_allow"`
-	MinRanges   int      `yaml:"min_ranges"`
+	APIKey     string   `yaml:"apikey"`
+	Secret     string   `yaml:"secret"`
+	Token      string   `yaml:"token"`
+	Server     string   `yaml:"server"`
+	Output     string   `yaml:"output"`
+	Test       string   `yaml:"test"`
+	Reload     string   `yaml:"reload"`
+	ExtraAllow []string `yaml:"extra_allow"`
+	MinRanges  int      `yaml:"min_ranges"`
+}
+
+// serverType describes one supported web server: the defaults for output,
+// test and reload, and how the allow-list file is rendered. Adding a server
+// means adding an entry to serverTypes (and, if its file format is new, teaching
+// canonicalRule to read it back).
+type serverType struct {
+	output, test, reload string
+
+	// entry renders one allowed network as a line of the file.
+	entry func(netip.Prefix) string
+	// footer is appended after the last entry.
+	footer string
+}
+
+var serverTypes = map[string]serverType{
+	// nginx: snippet included in each server {} block.
+	"nginx": {
+		output: "/etc/nginx/snippets/myra-only.conf",
+		test:   "nginx -t",
+		reload: "systemctl reload nginx",
+		entry:  func(p netip.Prefix) string { return "allow " + formatCIDR(p) + ";" },
+		footer: "\ndeny all;\n",
+	},
+	// HAProxy: ACL pattern file, the deny is done by the ACL in haproxy.cfg.
+	"haproxy": {
+		output: "/etc/haproxy/myra-only.lst",
+		test:   "haproxy -c -f /etc/haproxy/haproxy.cfg",
+		reload: "systemctl reload haproxy",
+		entry:  formatCIDR,
+	},
+}
+
+func serverNames() []string {
+	names := make([]string, 0, len(serverTypes))
+	for name := range serverTypes {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
 }
 
 var (
@@ -94,15 +136,15 @@ func run() int {
 		return exitUnchanged
 	}
 	if len(ranges) < cfg.MinRanges {
-		fail("only %d ranges returned (min_ranges=%d) - refusing to touch %s", len(ranges), cfg.MinRanges, cfg.Snippet)
+		fail("only %d ranges returned (min_ranges=%d) - refusing to touch %s", len(ranges), cfg.MinRanges, cfg.Output)
 		return exitError
 	}
 
 	rendered := render(cfg, ranges)
 
-	current, err := os.ReadFile(cfg.Snippet)
+	current, err := os.ReadFile(cfg.Output)
 	if err != nil && !errors.Is(err, os.ErrNotExist) {
-		fail("read %s: %v", cfg.Snippet, err)
+		fail("read %s: %v", cfg.Output, err)
 		return exitError
 	}
 
@@ -126,7 +168,7 @@ func run() int {
 	}
 
 	if dryRun {
-		fmt.Println("dry-run: nothing written, nginx untouched")
+		fmt.Printf("dry-run: nothing written, %s untouched\n", cfg.Server)
 		return exitChanged
 	}
 
@@ -134,7 +176,7 @@ func run() int {
 		fail("apply: %v", err)
 		return exitError
 	}
-	fmt.Printf("applied to %s, nginx tested + reloaded (%s)\n", cfg.Snippet, time.Now().Format(time.RFC3339))
+	fmt.Printf("applied to %s, %s tested + reloaded (%s)\n", cfg.Output, cfg.Server, time.Now().Format(time.RFC3339))
 	return exitChanged
 }
 
@@ -153,14 +195,21 @@ func loadConfig(path string) (*configuration, error) {
 	if cfg.Token == "" && (cfg.APIKey == "" || cfg.Secret == "") {
 		return nil, errors.New("need either token or apikey+secret")
 	}
-	if cfg.Snippet == "" {
-		cfg.Snippet = "/etc/nginx/snippets/myra-only.conf"
+	if cfg.Server == "" {
+		cfg.Server = "nginx"
 	}
-	if cfg.NginxTest == "" {
-		cfg.NginxTest = "nginx -t"
+	defaults, ok := serverTypes[cfg.Server]
+	if !ok {
+		return nil, fmt.Errorf("server %q: must be one of %s", cfg.Server, strings.Join(serverNames(), ", "))
 	}
-	if cfg.NginxReload == "" {
-		cfg.NginxReload = "systemctl reload nginx"
+	if cfg.Output == "" {
+		cfg.Output = defaults.output
+	}
+	if cfg.Test == "" {
+		cfg.Test = defaults.test
+	}
+	if cfg.Reload == "" {
+		cfg.Reload = defaults.reload
 	}
 	if cfg.MinRanges <= 0 {
 		cfg.MinRanges = 8
@@ -283,11 +332,15 @@ func parseCIDR(s string) (netip.Prefix, error) {
 	return p.Masked(), nil
 }
 
+// render produces the allow-list file in the format of cfg.Server
+// (which loadConfig has validated).
 func render(cfg *configuration, ranges []string) []byte {
+	server := serverTypes[cfg.Server]
+
 	var b strings.Builder
 	b.WriteString("# GENERATED by myra-ranges - do not edit by hand, edits are overwritten.\n")
 	b.WriteString("# Origin lock-down: only the Myra CDN (and the extra_allow entries) may talk\n")
-	b.WriteString("# to the public vhosts; everything else gets 403. Source: Myra API\n")
+	b.WriteString("# to the public frontends. Source: Myra API\n")
 	b.WriteString("# (ListIPRanges, enabled + currently valid). https://github.com/xellio/myra-ranges\n")
 	fmt.Fprintf(&b, "# %d Myra ranges.\n\n", len(ranges))
 
@@ -295,7 +348,7 @@ func render(cfg *configuration, ranges []string) []byte {
 		b.WriteString("# extra_allow (config): local / LAN\n")
 		for _, e := range cfg.ExtraAllow {
 			p, _ := parseCIDR(e)
-			fmt.Fprintf(&b, "allow %s;\n", cidrForNginx(p))
+			b.WriteString(server.entry(p) + "\n")
 		}
 		b.WriteString("\n")
 	}
@@ -303,24 +356,25 @@ func render(cfg *configuration, ranges []string) []byte {
 	b.WriteString("# Myra CDN\n")
 	for _, r := range ranges {
 		p, _ := netip.ParsePrefix(r)
-		fmt.Fprintf(&b, "allow %s;\n", cidrForNginx(p))
+		b.WriteString(server.entry(p) + "\n")
 	}
-	b.WriteString("\ndeny all;\n")
+	b.WriteString(server.footer)
 	return []byte(b.String())
 }
 
-// cidrForNginx renders single hosts without the /32 or /128 suffix (nginx
-// accepts both, but "allow 127.0.0.1;" reads better and matches the old file).
-func cidrForNginx(p netip.Prefix) string {
+// formatCIDR renders single hosts without the /32 or /128 suffix (nginx and
+// HAProxy accept both, but "127.0.0.1" reads better and matches the old file).
+func formatCIDR(p netip.Prefix) string {
 	if p.IsSingleIP() {
 		return p.Addr().String()
 	}
 	return p.String()
 }
 
-// allowSet extracts the effective allow/deny lines (no comments, no blanks),
-// with the address part canonicalized so "allow 1.2.3.4/32;" and
-// "allow 1.2.3.4;" (or masked/unmasked prefixes) compare equal.
+// allowSet extracts the effective rules (no comments, no blanks): nginx
+// allow/deny lines or bare HAProxy pattern lines, with the address part
+// canonicalized so "allow 1.2.3.4/32;" and "allow 1.2.3.4;" (or masked/unmasked
+// prefixes) compare equal.
 func allowSet(data []byte) map[string]bool {
 	set := map[string]bool{}
 	for _, line := range strings.Split(string(data), "\n") {
@@ -336,12 +390,18 @@ func allowSet(data []byte) map[string]bool {
 	return set
 }
 
-// canonicalRule normalizes "allow X;" / "deny X;" to a single spelling of X.
+// canonicalRule normalizes "allow X;" / "deny X;" (nginx) and a bare "X"
+// (HAProxy pattern file) to a single spelling of X.
 func canonicalRule(line string) string {
 	fields := strings.Fields(strings.TrimSuffix(line, ";"))
+	if len(fields) == 1 && !strings.HasSuffix(line, ";") {
+		if p, err := parseCIDR(fields[0]); err == nil {
+			return formatCIDR(p)
+		}
+	}
 	if len(fields) == 2 && (fields[0] == "allow" || fields[0] == "deny") && fields[1] != "all" {
 		if p, err := parseCIDR(fields[1]); err == nil {
-			return fields[0] + " " + cidrForNginx(p) + ";"
+			return fields[0] + " " + formatCIDR(p) + ";"
 		}
 	}
 	return strings.Join(fields, " ") + ";"
@@ -375,36 +435,36 @@ func diffAllows(current, rendered []byte) (added, removed []string) {
 }
 
 func apply(cfg *configuration, current, rendered []byte) error {
-	dir := filepath.Dir(cfg.Snippet)
+	dir := filepath.Dir(cfg.Output)
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return err
 	}
-	prev := cfg.Snippet + ".prev"
+	prev := cfg.Output + ".prev"
 	if len(current) > 0 {
 		if err := os.WriteFile(prev, current, 0o644); err != nil {
 			return fmt.Errorf("write %s: %v", prev, err)
 		}
 	}
 
-	tmp := cfg.Snippet + ".tmp"
+	tmp := cfg.Output + ".tmp"
 	if err := os.WriteFile(tmp, rendered, 0o644); err != nil {
 		return fmt.Errorf("write %s: %v", tmp, err)
 	}
-	if err := os.Rename(tmp, cfg.Snippet); err != nil {
+	if err := os.Rename(tmp, cfg.Output); err != nil {
 		return fmt.Errorf("rename: %v", err)
 	}
 
-	if out, err := runCmd(cfg.NginxTest); err != nil {
+	if out, err := runCmd(cfg.Test); err != nil {
 		// roll back before reporting
 		if len(current) > 0 {
-			_ = os.WriteFile(cfg.Snippet, current, 0o644)
+			_ = os.WriteFile(cfg.Output, current, 0o644)
 		} else {
-			_ = os.Remove(cfg.Snippet)
+			_ = os.Remove(cfg.Output)
 		}
-		return fmt.Errorf("%q failed, previous snippet restored:\n%s", cfg.NginxTest, out)
+		return fmt.Errorf("%q failed, previous file restored:\n%s", cfg.Test, out)
 	}
-	if out, err := runCmd(cfg.NginxReload); err != nil {
-		return fmt.Errorf("%q failed (snippet already in place, config tested OK):\n%s", cfg.NginxReload, out)
+	if out, err := runCmd(cfg.Reload); err != nil {
+		return fmt.Errorf("%q failed (file already in place, config tested OK):\n%s", cfg.Reload, out)
 	}
 	return nil
 }
