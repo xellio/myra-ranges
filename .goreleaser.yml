@@ -25,7 +25,8 @@ checksum:
 
 changelog:
   use: git
-  sort: asc
+  # no sort: keep git order (newest first); sort would order by message
+  abbrev: 7
   filters:
     exclude:
       - "^Merge "
