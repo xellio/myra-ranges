@@ -207,7 +207,9 @@ func loadConfig(path string) (*configuration, error) {
 		return nil, err
 	}
 	cfg := &configuration{}
-	if err := yaml.Unmarshal(data, cfg); err != nil {
+	// Strict: an unknown key (typo, or an option that was renamed) is an
+	// error instead of silently falling back to the default.
+	if err := yaml.UnmarshalStrict(data, cfg); err != nil {
 		return nil, err
 	}
 	if cfg.Token == "" && (cfg.APIKey == "" || cfg.Secret == "") {

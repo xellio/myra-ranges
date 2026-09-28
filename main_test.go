@@ -191,6 +191,12 @@ func TestLoadConfigDefaults(t *testing.T) {
 	if _, err := loadConfig(write("log_level: verbose\n")); err == nil {
 		t.Errorf("expected error for unknown log_level")
 	}
+	// unknown keys (typos, pre-0.1.0 names like snippet) must not be ignored
+	for _, key := range []string{"snippet: /tmp/x.conf\n", "ouptut: /tmp/x.conf\n"} {
+		if _, err := loadConfig(write(key)); err == nil {
+			t.Errorf("expected error for unknown key %q", key)
+		}
+	}
 }
 
 func TestRunCmdCapturesOutputBelowDebug(t *testing.T) {
