@@ -3,10 +3,18 @@ apikey: 'ADD_YOUR_API_KEY'
 secret: 'ADD_YOUR_SECRET'
 # token: 'ADD_YOUR_API_TOKEN'
 
-# Where the rendered allow-list goes and what nginx test/reload to run.
-snippet: /etc/nginx/snippets/myra-only.conf
-nginx_test: nginx -t
-nginx_reload: systemctl reload nginx
+# Server type: nginx (default) or haproxy. Selects the file format and the
+# defaults for output/test/reload below.
+server: nginx
+
+# Where the rendered allow-list goes and what config test/reload to run.
+# Leave them out to use the defaults of the server type:
+#   nginx:   /etc/nginx/snippets/myra-only.conf, nginx -t, systemctl reload nginx
+#   haproxy: /etc/haproxy/myra-only.lst, haproxy -c -f /etc/haproxy/haproxy.cfg,
+#            systemctl reload haproxy
+# output: /etc/nginx/snippets/myra-only.conf
+# test: nginx -t
+# reload: systemctl reload nginx
 
 # Always allowed in addition to the Myra ranges: localhost for local checks,
 # add your LAN / monitoring hosts as needed (CIDR or single IP).
@@ -17,3 +25,8 @@ extra_allow:
 
 # Safety net: refuse to deploy if Myra returns fewer ranges than this.
 min_ranges: 8
+
+# Output verbosity: debug, info (default) or warning. debug also shows the
+# output of the test and reload commands (otherwise only shown when a command
+# fails); warning only prints warnings and errors, handy for cron.
+log_level: info
