@@ -1,6 +1,7 @@
 # myra-ranges
 
 [![CI](https://github.com/xellio/myra-ranges/actions/workflows/ci.yml/badge.svg)](https://github.com/xellio/myra-ranges/actions/workflows/ci.yml)
+[![Release](https://img.shields.io/github/v/release/xellio/myra-ranges)](https://github.com/xellio/myra-ranges/releases/latest)
 [![Go Reference](https://pkg.go.dev/badge/github.com/xellio/myra-ranges.svg)](https://pkg.go.dev/github.com/xellio/myra-ranges)
 [![Go Report Card](https://goreportcard.com/badge/github.com/xellio/myra-ranges)](https://goreportcard.com/report/github.com/xellio/myra-ranges)
 [![Go Version](https://img.shields.io/github/go-mod/go-version/xellio/myra-ranges)](go.mod)
@@ -42,12 +43,33 @@ or empty API answer can never lock the CDN out of your origin.
 
 ## Install
 
+Prebuilt static binaries for Linux (amd64, arm64) are attached to every
+[release](https://github.com/xellio/myra-ranges/releases):
+
 ```sh
+VERSION=0.1.0 ARCH=amd64   # or arm64
+curl -LO https://github.com/xellio/myra-ranges/releases/download/v${VERSION}/myra-ranges_${VERSION}_linux_${ARCH}.tar.gz
+curl -LO https://github.com/xellio/myra-ranges/releases/download/v${VERSION}/checksums.txt
+sha256sum --check --ignore-missing checksums.txt
+tar xzf myra-ranges_${VERSION}_linux_${ARCH}.tar.gz
+./myra-ranges --version
+cp config.example.yml config.yml && chmod 600 config.yml
+```
+
+Or build it yourself (Go, see `go.mod` for the version):
+
+```sh
+go install github.com/xellio/myra-ranges@latest
+# or
 git clone https://github.com/xellio/myra-ranges && cd myra-ranges
 make                 # ./bin/myra-ranges for the local platform
 make linux-arm64     # cross-compile (e.g. for a Raspberry Pi)
-cp config.example.yml config.yml && chmod 600 config.yml
 ```
+
+Versions follow [SemVer](https://semver.org/). Before 1.0.0 a minor
+release (0.x.0) may change config keys or flags; the release notes say so.
+Unknown config keys are an error, so a renamed option never gets silently
+ignored.
 
 Fill in `apikey` + `secret` (or `token`) from the Myra app and pick your
 `server`. The other keys:
@@ -134,6 +156,16 @@ overwritten.
 
 ```sh
 make test
+```
+
+Releases are cut by pushing a tag; the `release` workflow runs the CI checks
+and then [GoReleaser](https://goreleaser.com/) (`.goreleaser.yml`), which
+builds the binaries and publishes the GitHub release with checksums and a
+changelog from the commits since the previous tag:
+
+```sh
+git tag -a v0.2.0 -m "v0.2.0"
+git push origin v0.2.0
 ```
 
 Adding a server type means adding an entry to `serverTypes` in `main.go`

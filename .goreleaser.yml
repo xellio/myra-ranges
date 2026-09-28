@@ -1,0 +1,31 @@
+# Release build, run by .github/workflows/release.yml on a pushed v* tag.
+version: 2
+
+project_name: myra-ranges
+
+builds:
+  - env:
+      - CGO_ENABLED=0
+    goos: [linux]
+    goarch: [amd64, arm64]
+    flags: [-trimpath]
+    # {{.Tag}} keeps the leading v, same as `make` (git describe) and go install
+    ldflags:
+      - -s -w -X main.version={{.Tag}}
+
+archives:
+  - formats: [tar.gz]
+    files:
+      - LICENSE
+      - README.md
+      - config.example.yml
+
+checksum:
+  name_template: checksums.txt
+
+changelog:
+  use: git
+  sort: asc
+  filters:
+    exclude:
+      - "^Merge "
