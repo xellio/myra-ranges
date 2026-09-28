@@ -116,6 +116,7 @@ pattern file does not exist.
 ## Run
 
 ```sh
+./bin/myra-ranges --version                  # print the version
 ./bin/myra-ranges -c config.yml --print      # list the current Myra ranges, nothing else
 ./bin/myra-ranges -c config.yml --dry-run    # show what would change
 sudo ./bin/myra-ranges -c config.yml         # apply (root: writes the file, reloads)

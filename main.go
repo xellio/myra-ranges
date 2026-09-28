@@ -21,6 +21,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime/debug"
 	"sort"
 	"strconv"
 	"strings"
@@ -109,11 +110,27 @@ func serverNames() []string {
 	return names
 }
 
+// version is set at build time (-ldflags "-X main.version=v1.2.3", see the
+// Makefile and .goreleaser.yml). For `go install ...@v1.2.3` builds it falls
+// back to the module version from the build info.
+var version = "dev"
+
+func buildVersion() string {
+	if version != "dev" {
+		return version
+	}
+	if bi, ok := debug.ReadBuildInfo(); ok && bi.Main.Version != "" && bi.Main.Version != "(devel)" {
+		return bi.Main.Version
+	}
+	return version
+}
+
 var (
-	configFile string
-	dryRun     bool
-	printOnly  bool
-	force      bool
+	configFile  string
+	dryRun      bool
+	printOnly   bool
+	force       bool
+	showVersion bool
 )
 
 func init() {
@@ -122,10 +139,15 @@ func init() {
 	flag.BoolVar(&dryRun, "dry-run", false, "render + diff only, never write or reload")
 	flag.BoolVar(&printOnly, "print", false, "print the current Myra ranges (one CIDR per line) and exit")
 	flag.BoolVar(&force, "force", false, "write + test + reload even if the effective rules are unchanged (e.g. to replace a hand-written file)")
+	flag.BoolVar(&showVersion, "version", false, "print the version and exit")
 }
 
 func main() {
 	flag.Parse()
+	if showVersion {
+		fmt.Println("myra-ranges " + buildVersion())
+		return
+	}
 	os.Exit(run())
 }
 

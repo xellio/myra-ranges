@@ -1,17 +1,19 @@
 TARGET = myra-ranges
 BINDIR = ./bin/
+VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
+LDFLAGS = -s -w -X main.version=$(VERSION)
 
 all: build
 
 build: $(BINDIR)
-	go build -ldflags="-s -w" -o $(BINDIR)$(TARGET) .
+	go build -ldflags="$(LDFLAGS)" -o $(BINDIR)$(TARGET) .
 
 $(BINDIR):
 	mkdir -p $(BINDIR)
 
 # cross-compile, e.g. for a Raspberry Pi
 linux-arm64: $(BINDIR)
-	GOOS=linux GOARCH=arm64 go build -ldflags="-s -w" -o $(BINDIR)$(TARGET)-linux-arm64 .
+	GOOS=linux GOARCH=arm64 go build -ldflags="$(LDFLAGS)" -o $(BINDIR)$(TARGET)-linux-arm64 .
 
 test:
 	go test ./...
